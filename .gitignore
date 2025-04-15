@@ -31,3 +31,7 @@
 *.exe
 *.out
 *.app
+*.o
+executables
+
+.vscode
