@@ -13,6 +13,9 @@ int32_t read_full(int fd, char *rbuf, size_t n) {
     while(n > 0) {
         ssize_t rv = read(fd, rbuf, n);
         if(rv <= 0) {
+            if (rv == -1) {
+                return 0;
+            }
             return -1;
         }
 
