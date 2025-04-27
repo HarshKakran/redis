@@ -19,12 +19,6 @@
 
 const size_t k_max_msg = 32 << 20;
 
-struct pollfd {
-    int fd;
-    short events;
-    short revents;
-};
-
 struct Conn {
     int fd = -1;
     // application's intentions, for the event loop
@@ -42,5 +36,7 @@ int32_t read_full(int fd, char *rbuf, size_t n);
 int32_t write_all(int fd, const char *wbuf, size_t n);
 void fd_set_nb(int fd);
 int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+void buf_append(std::vector<uint8_t>& buf, const uint8_t* data, size_t len);
+void buf_consume(std::vector<uint8_t> &buf, size_t n);
 
 #endif

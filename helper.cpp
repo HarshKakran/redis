@@ -2,12 +2,12 @@
 
 void die(const char *s) {
     int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
+    fprintf(stderr, "[%d] %s\n", err, s);
     abort();
 }
 
 void msg(const char *s) {
-    fprintf(stderr, "%s\n", msg);
+    fprintf(stderr, "%s\n", s);
 }
 
 int32_t read_full(int fd, char *rbuf, size_t n) {
@@ -47,4 +47,14 @@ void fd_set_nb(int fd){
     int flags = fcntl(fd, F_GETFL, 0); // get the flags
     flags |= O_NONBLOCK;               // modify the flags
     fcntl(fd, F_SETFL, flags);         // set the flags
+}
+
+// append at the back
+void buf_append(std::vector<uint8_t>& buf, const uint8_t* data, size_t len) {
+    buf.insert(buf.end(), data, data + len);
+}
+
+// remove from the front
+void buf_consume(std::vector<uint8_t> &buf, size_t n) {
+    buf.erase(buf.begin(), buf.begin() + n);
 }

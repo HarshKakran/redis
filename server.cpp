@@ -1,12 +1,11 @@
 #include "helper.h"
 
 // function declarations
-static void buf_append(std::vector<uint8_t>& buf, const uint8_t* data, size_t len);
-static void buf_consume(std::vector<uint8_t> &buf, size_t n);
 static bool try_one_request(Conn* conn);
 static int32_t one_request(int conn_fd);
 static void handle_read(Conn *conn);
 static void handle_write(Conn *conn);
+static Conn *handle_accept(int fd);
 
 // static void do_something(int fd) {
 //     char rbuf[64] = {};
@@ -58,11 +57,11 @@ int main() {
         // prepare arguments for the poll call
         poll_args.clear();
 
-        struct pollfd pfd = {
-            fd: fd, 
-            events: POLLIN, 
-            revents: 0
-        };
+        struct pollfd pfd;
+        pfd.fd =  fd;
+        pfd.events =  POLLIN;
+        pfd.revents =  0;
+
         poll_args.push_back(pfd);
 
         for(Conn *conn:fd2conn) {
@@ -70,11 +69,11 @@ int main() {
                 continue;
             }
 
-            struct pollfd pfd = {
-                fd: conn->fd, 
-                events: POLLERR, 
-                revents: 0
-            };
+            struct pollfd pfd;
+            pfd.fd = conn->fd; 
+            pfd.events = POLLERR; 
+            pfd.revents = 0;
+
 
             if(conn->want_read) {
                 pfd.events |= POLLIN;
@@ -113,14 +112,14 @@ int main() {
             uint8_t ready = poll_args[i].revents;
             Conn *conn = fd2conn[poll_args[i].fd];
             
-            if(ready && POLLIN) {
+            if(ready & POLLIN) {
                 handle_read(conn);
             }
-            if (ready && POLLOUT) {
+            if (ready & POLLOUT) {
                 handle_write(conn);
             }
             // close the socket if there is an error or according to application logic
-            if ((ready && POLLERR) || conn->want_close) {
+            if ((ready & POLLERR) || conn->want_close) {
                 (void)close(conn->fd);
                 fd2conn[conn->fd] = NULL;
                 delete conn;
@@ -129,16 +128,6 @@ int main() {
     }
 
     return 0;
-}
-
-// append at the back
-static void buf_append(std::vector<uint8_t>& buf, const uint8_t* data, size_t len) {
-    buf.insert(buf.end(), data, data + len);
-}
-
-// remove from the front
-static void buf_consume(std::vector<uint8_t> &buf, size_t n) {
-    buf.erase(buf.begin(), buf.begin() + n);
 }
 
 static bool try_one_request(Conn* conn) {
@@ -163,6 +152,7 @@ static bool try_one_request(Conn* conn) {
 
     const uint8_t *request = &conn->incoming[4];
     // 4. Process the parsed message.
+    printf("len:%u data:%.*s\n", len, len < 100 ? len : 100, request);
 
     // generate the response (echo)
     buf_append(conn->outgoing, (const uint8_t *)& len, 4);
