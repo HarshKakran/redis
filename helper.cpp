@@ -1,12 +1,13 @@
 #include "helper.h"
 
-void die(const char* s) {
-    perror(s);
-    exit(EXIT_FAILURE);
-} 
+void die(const char *s) {
+    int err = errno;
+    fprintf(stderr, "[%d] %s\n", err, msg);
+    abort();
+}
 
 void msg(const char *s) {
-    printf("%s\n", s);
+    fprintf(stderr, "%s\n", msg);
 }
 
 int32_t read_full(int fd, char *rbuf, size_t n) {
@@ -40,4 +41,10 @@ int32_t write_all(int fd, const char *wbuf, size_t n) {
     }
 
     return 0;
+}
+
+void fd_set_nb(int fd){
+    int flags = fcntl(fd, F_GETFL, 0); // get the flags
+    flags |= O_NONBLOCK;               // modify the flags
+    fcntl(fd, F_SETFL, flags);         // set the flags
 }
