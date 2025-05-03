@@ -73,19 +73,56 @@ static int32_t read_res(int fd) {
     return 0;
 }
 
-int main() {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        die("socket()");
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <server-container> [port=1234]\n", argv[0]);
+        return 1;
     }
 
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = ntohs(1234);
-    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1
-    int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
-    if (rv) {
-        die("connect");
+    const char *hostname = argv[1];  // server's container name
+    const char *port = (argc > 2) ? argv[2] : "1234";
+    struct addrinfo hints, *res, *p;
+    int fd = -1;
+    int rv;
+
+    // Setup hints for getaddrinfo
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    // Resolve the hostname and port
+    rv = getaddrinfo(hostname, port, &hints, &res);
+    if (rv != 0) {
+        die("getaddrinfo");
+    }
+
+    // Loop through results and connect to the first we can
+    for(p = res; p != NULL; p = p->ai_next) {
+        char ipstr[INET_ADDRSTRLEN];
+        struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+        inet_ntop(AF_INET, &(ipv4->sin_addr), ipstr, sizeof(ipstr));
+        printf("Trying %s:%s...\n", ipstr, port);
+        
+        fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (fd < 0) {
+            int err = errno;
+            fprintf(stderr, "[%d] %s %d\n", err, "socket", fd);
+            continue;
+        }
+    
+        int rv = connect(fd, p->ai_addr, p->ai_addrlen);
+        if (rv) {
+            int err = errno;
+            fprintf(stderr, "[%d] %s\n", err, "socket");
+            continue;
+        }
+
+        break;
+    }
+
+    freeaddrinfo(res);
+    if (p == NULL || fd < 0) {
+        die("client: failed to connect");
     }
 
     // multiple pipelined requests

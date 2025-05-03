@@ -159,8 +159,9 @@ static bool try_one_request(Conn* conn) {
     buf_append(conn->outgoing, request, len);
     
     // 5. Remove message from `conn::incoming`.
-    buf_consume(conn->incoming, len+4);
-    return true; // success
+    // conn->incoming.clear()               // WRONG
+    buf_consume(conn->incoming, 4 + len);   // CORRECT
+    return true; // successbrew install --cask docker
 
 }
 
@@ -217,6 +218,7 @@ static Conn *handle_accept(int fd) {
     Conn *conn = new Conn();
     conn->fd  =  conn_fd;
     conn->want_read = true; // read the 1st request
+    // TODO: Initialise buffers
     return conn;
 }
 
@@ -234,17 +236,24 @@ static void handle_read(Conn *conn) {
     // 3. Try to parse the accumulated buffer.
     // 4. Process the parsed message.
     // 5. Remove the message from `Conn::incoming`.
-    try_one_request(conn);
+    // try_one_request(conn);               // WRONG
+    while (try_one_request(conn)) {}        // CORRECT
 
     if(conn->outgoing.size() > 0) { // has a response
         conn->want_read = false;
         conn->want_write = true;
+        // The socket is likely ready to write in a request-response protocol,
+        // try to write it without waiting for the next iteration.
+        return handle_write(conn);      // optimization
     } // else read more data
 }
 
 static void handle_write(Conn *conn){
     assert(conn->outgoing.size() > 0);
     ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
+    if (rv < 0 && errno==EAGAIN) {
+        return; // actually not ready
+    }
     if (rv < 0) {
         conn->want_close = true;
         return;
