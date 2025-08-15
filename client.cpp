@@ -61,7 +61,7 @@ static int32_t print_response(const uint8_t *data, size_t size)
                 return -1;
             }
 
-            printf("(err) %d %. %s\n", code, len, &data[1 + 8]);
+            printf("(err) %d %u %s\n", code, len, &data[1 + 8]);
             return 1 + 8 + len;
         }
 
@@ -81,7 +81,7 @@ static int32_t print_response(const uint8_t *data, size_t size)
                 return -1;
             }
 
-            printf("(str) %. %s\n", len, &data[1 + 4]);
+            printf("(str) %u %s\n", len, &data[1 + 4]);
             return 1 + 4 + len;
         }
 
@@ -95,7 +95,7 @@ static int32_t print_response(const uint8_t *data, size_t size)
         {
             int64_t val = 0;
             memcpy(&val, &data[1], 8);
-            printf("(int) %ld\n", &val);
+            printf("(int) %lld\n", val);
             return 1 + 8;
         }
 

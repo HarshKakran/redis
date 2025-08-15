@@ -1,4 +1,4 @@
-#include <hashtable.h>
+#include "hashtable.h"
 
 void h_init(HTab *t, size_t n)
 {
@@ -74,7 +74,7 @@ HNode *hm_delete(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *))
     {
         return h_detach(&hmap->newer, from);
     }
-    else if (from = h_lookup(&hmap->older, key, eq))
+    else if ((from = h_lookup(&hmap->older, key, eq)))
     {
         return h_detach(&hmap->older, from);
     }
