@@ -1,14 +1,26 @@
 #include "helper.h"
+#include "hashtable.h"
+
+// member is the attribute name in type T
+#define container_of(ptr, T, member) \
+    ((T *)((char *)ptr - offsetof(T, member)))
 
 // function declarations
 static bool try_one_request(Conn *conn);
-static int32_t one_request(int conn_fd);
 static void handle_read(Conn *conn);
 static void handle_write(Conn *conn);
 static Conn *handle_accept(int fd);
 static int32_t parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out);
-static void do_request(std::vector<std::string> &cmd, Response &out);
-static void make_response(const Response &resp, std::vector<uint8_t> &out);
+static void do_request(std::vector<std::string> &cmd, Buffer &out);
+static void do_del(std::vector<std::string> &cmd, Buffer &out);
+static void do_set(std::vector<std::string> &cmd, Buffer &out);
+static void do_get(std::vector<std::string> &cmd, Buffer &out);
+static void do_keys(std::vector<std::string> &cmd, Buffer &out);
+static bool cb_keys(HNode *node, void *args);
+
+static void response_begin(Buffer &out, size_t *header);
+static size_t response_size(Buffer &out, size_t header);
+static void response_end(Buffer &out, size_t header);
 
 int main()
 {
@@ -34,6 +46,8 @@ int main()
         // exit(EXIT_FAILURE);
         die("bind");
     }
+
+    fd_set_nb(fd);
 
     rv = listen(fd, SOMAXCONN);
     if (rv)
@@ -167,73 +181,34 @@ static bool try_one_request(Conn *conn)
         conn->want_close = true;
         return false;
     }
-    Response resp;
-    do_request(cmd, resp);
-    make_response(resp, conn->outgoing);
 
-    printf("len:%u data:%.*s\n", len, len < 100 ? len : 100, request);
-
-    // generate the response (echo)
-    buf_append(conn->outgoing, (const uint8_t *)&len, 4);
-    buf_append(conn->outgoing, request, len);
+    size_t header_pos = 0;
+    response_begin(conn->outgoing, &header_pos);
+    do_request(cmd, conn->outgoing);
+    response_end(conn->outgoing, header_pos);
 
     // 5. Remove message from `conn::incoming`.
     // conn->incoming.clear()               // WRONG
     buf_consume(conn->incoming, 4 + len); // CORRECT
-    return true;                          // successbrew install --cask docker
-}
-
-static int32_t one_request(int conn_fd)
-{
-    // 4 bytes header
-    char rbuf[4 + k_max_msg];
-    // errno is set to the error code if the syscall failed.
-    // However, errno is NOT set to 0 if the syscall succeeded;
-    // it simply keeps the previous value.
-    // That’s why the following code sets errno = 0 before read_full() to distinguish the EOF case.
-    errno = 0;
-    int32_t err = read_full(conn_fd, rbuf, 4);
-    if (err)
-    {
-        msg(errno == 0 ? "EOF" : "read() error");
-        return err;
-    }
-
-    uint32_t len = 0;
-    memcpy(&len, rbuf, 4); // this will copy the first 4 byte at the memory address pointed by rbuf
-    if (len > k_max_msg)
-    {
-        msg("too long");
-    }
-
-    // request body, after the 4 byte header
-    err = read_full(conn_fd, &rbuf[4], len);
-    if (err)
-    {
-        msg("read() error");
-        return err;
-    }
-
-    printf("client says: %.*s\n", len, &rbuf[4]);
-
-    const char reply[] = "world";
-    char wbuf[4 + sizeof(reply)];
-    len = (uint32_t)strlen(reply);
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], reply, len);
-    return write_all(conn_fd, wbuf, 4 + len);
+    return true;                          // success
 }
 
 static Conn *handle_accept(int fd)
 {
     // accept
-    struct sockaddr_in client = {};
-    socklen_t addrlen = sizeof(client);
-    int conn_fd = accept(fd, (sockaddr *)&client, &addrlen);
+    struct sockaddr_in client_addr = {};
+    socklen_t addrlen = sizeof(client_addr);
+    int conn_fd = accept(fd, (sockaddr *)&client_addr, &addrlen);
     if (conn_fd < 0)
     {
+        msg_errno("accept() error");
         return NULL;
     }
+
+    uint32_t ip = client_addr.sin_addr.s_addr;
+    fprintf(stderr, "new client from %u.%u.%u.%u:%u\n%u\n",
+            ip & 255, (ip >> 8) & 255, (ip >> 16) & 255, ip >> 24,
+            ntohs(client_addr.sin_port), ip);
 
     // set the new connection fd to non blocking
     fd_set_nb(conn_fd);
@@ -251,17 +226,33 @@ static void handle_read(Conn *conn)
     // 1. Do a non blocking read
     uint8_t buf[64 * 1024];
     ssize_t rv = read(conn->fd, buf, sizeof(buf));
-    if (rv <= 0)
+    if (rv < 0 && errno == EAGAIN)
+    {
+        return; // actually not ready
+    }
+    if (rv < 0)
     { // handle IO error (rv < 0) or EOF (rv == 0)
+        msg_errno("read() error");
         conn->want_close = true;
         return;
+    }
+    if (rv == 0)
+    { // EOF
+        if (conn->incoming.size() == 0)
+        {
+            msg("client closed");
+        }
+        else
+        {
+            msg("unexpected EOF");
+        }
+        conn->want_close = true;
+        return; // want close
     }
 
     // 2. Add the read data to the incoming buffer
     buf_append(conn->incoming, buf, (size_t)rv);
-    // 3. Try to parse the accumulated buffer.
-    // 4. Process the parsed message.
-    // 5. Remove the message from `Conn::incoming`.
+
     // try_one_request(conn);               // WRONG
     while (try_one_request(conn))
     {
@@ -287,6 +278,7 @@ static void handle_write(Conn *conn)
     }
     if (rv < 0)
     {
+        msg("write() error");
         conn->want_close = true;
         return;
     }
@@ -300,6 +292,10 @@ static void handle_write(Conn *conn)
         conn->want_read = true;
     } // else write
 }
+
+// +------+-----+------+-----+------+-----+-----+------+
+// | nstr | len | str1 | len | str2 | ... | len | strn |
+// +------+-----+------+-----+------+-----+-----+------+
 
 static int32_t parse_req(const uint8_t *data, size_t size, std::vector<std::string> &out)
 {
@@ -336,40 +332,152 @@ static int32_t parse_req(const uint8_t *data, size_t size, std::vector<std::stri
     return 0;
 }
 
-static std::map<std::string, std::string> g_data;
+// static std::map<std::string, std::string> g_data;
 
-static void do_request(std::vector<std::string> &cmd, Response &out)
+static void do_request(std::vector<std::string> &cmd, Buffer &out)
 {
     if (cmd.size() == 2 && cmd[0] == "get")
     {
-        auto it = g_data.find(cmd[1]);
-        if (it == g_data.end())
-        {
-            out.status = RES_NX;
-            return;
-        }
-
-        const std::string &val = it->second;
-        out.data.assign(val.begin(), val.end());
+        return do_get(cmd, out);
     }
     else if ((cmd.size() == 3) && (cmd[0] == "set"))
     {
-        g_data[cmd[1]].swap(cmd[2]);
+        return do_set(cmd, out);
     }
     else if (cmd.size() == 2 && cmd[0] == "del")
     {
-        g_data.erase(cmd[1]);
+        return do_del(cmd, out);
+    }
+    else if (cmd.size() == 1 && cmd[0] == "keys")
+    {
+        return do_keys(cmd, out);
     }
     else
     {
-        out.status = RES_ERR; // unrecognized command
+        out_err(out, ERR_UNKNOWN, "unknown command."); // unrecognized command
     }
 }
 
-static void make_response(const Response &resp, std::vector<uint8_t> &out)
+static void response_begin(Buffer &out, size_t *header)
 {
-    uint32_t resp_len = 4 + (uint32_t)resp.data.size();
-    buf_append(out, (uint8_t *)&resp_len, 4);
-    buf_append(out, (uint8_t *)&resp.status, 4);
-    buf_append(out, resp.data.data(), resp.data.size());
+    *header = out.size();   // message header position
+    buf_append_u32(out, 0); // reserving the space
+}
+
+static size_t response_size(Buffer &out, size_t header)
+{
+    return out.size() - header - 4;
+}
+
+static void response_end(Buffer &out, size_t header)
+{
+    size_t msg_size = out.size() - header;
+    if (msg_size > k_max_msg)
+    {
+        out.resize(header + 4);
+        out_err(out, ERR_TOO_BIG, "too big response.");
+        msg_size = response_size(out, header);
+    }
+    // message header - added response size
+    uint32_t len = (uint32_t)msg_size;
+    memcpy(&out[header], &len, 4);
+}
+
+// gloabl states
+static struct
+{
+    HMap db;
+} g_data;
+
+struct Entry
+{
+    struct HNode node;
+    std::string key;
+    std::string val;
+};
+
+// equality comparison for struct `Entry`
+static bool eq_entry(HNode *lhs, HNode *rhs)
+{
+    Entry *l = container_of(lhs, Entry, node);
+    Entry *r = container_of(rhs, Entry, node);
+
+    return l->key == r->key;
+}
+
+// FNV hash
+static uint64_t str_hash(const uint8_t *data, size_t len)
+{
+    uint32_t h = 0x811C9DC5;
+    for (size_t i = 0; i < len; i++)
+    {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
+
+static void do_get(std::vector<std::string> &cmd, Buffer &out)
+{
+    // create a key node for look up
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+
+    // hash table lookup
+    HNode *node = hm_lookup(&g_data.db, &key.node, &eq_entry);
+    if (!node)
+    {
+        return out_nil(out);
+    }
+
+    // copy the value in output
+    const std::string val = container_of(node, Entry, node)->val;
+    return out_str(out, val.data(), val.size());
+}
+
+static void do_set(std::vector<std::string> &cmd, Buffer &out)
+{
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+
+    HNode *node = hm_lookup(&g_data.db, &key.node, &eq_entry);
+    if (node)
+    {
+        container_of(node, Entry, node)->val.swap(cmd[2]);
+    }
+    else
+    {
+        Entry *e = new Entry;
+        e->key.swap(key.key);
+        e->node.hcode = key.node.hcode;
+        e->val.swap(cmd[2]);
+        hm_insert(&g_data.db, &e->node);
+    }
+
+    return out_nil(out);
+}
+
+static void do_del(std::vector<std::string> &cmd, Buffer &out)
+{
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+
+    HNode *node = hm_delete(&g_data.db, &key.node, &eq_entry);
+    return out_int(out, node ? 1 : 0);
+}
+
+static bool cb_keys(HNode *node, void *args)
+{
+    Buffer &out = *(Buffer *)args;
+    const std::string &key = container_of(node, Entry, node)->key;
+    out_str(out, key.data(), key.size());
+    return true;
+}
+
+static void do_keys(std::vector<std::string> &cmd, Buffer &out)
+{
+    out_arr(out, uint32_t(hm_size(&g_data.db)));
+    hm_foreach(&g_data.db, &cb_keys, (void *)&out);
 }
